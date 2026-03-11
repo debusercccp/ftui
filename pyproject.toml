@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "ftui"
+version = "0.1.0"
+description = "Dual-pane TUI file transfer client (FTP/FTPS/SFTP/SCP)"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.53",
+    "paramiko>=3.4",
+    "rich>=13",
+]
+
+[project.scripts]
+ftui = "ftui.app:main"
+
+[project.optional-dependencies]
+scp = ["scp>=0.15"]
