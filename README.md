@@ -20,7 +20,8 @@ Supporta FTP, FTPS, SFTP e SCP.
 ## Installazione
 
 ```bash
-pip install textual paramiko rich --break-system-packages
+cd ftui
+pip install -e . --break-system-package
 ```
 
 ## Avvio
