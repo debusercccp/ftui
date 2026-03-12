@@ -575,12 +575,27 @@ class FtuiApp(App):
             pass
 
     def action_enter_dir(self):
+        # Sync active pane dalla tabella che ha il focus
+        try:
+            focused = self.focused
+            if focused and hasattr(focused, "id"):
+                if focused.id == "local-table":
+                    self._active_pane = "local"
+                elif focused.id == "remote-table":
+                    self._active_pane = "remote"
+        except Exception:
+            pass
         self._active_file_pane().enter_selected()
 
     @on(DataTable.RowSelected)
     def _row_selected(self, event: DataTable.RowSelected):
-        pane = self._active_file_pane()
-        pane.enter_selected()
+        # Determina quale pannello ha generato l'evento dal table id
+        table_id = event.data_table.id
+        if table_id == "local-table":
+            self._active_pane = "local"
+        elif table_id == "remote-table":
+            self._active_pane = "remote"
+        self._active_file_pane().enter_selected()
 
     # ── Connect ──
 
