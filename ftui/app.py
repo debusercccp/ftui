@@ -482,18 +482,17 @@ class FilePane(Vertical):
 
     def get_selected_entry(self) -> Optional[FileEntry]:
         table = self.query_one(DataTable)
-        if table.cursor_row is None:
-            return None
-        row_key = table.get_row_at(table.cursor_row)
-        if not row_key:
-            return None
-        # first cell is "icon name"
-        name_cell = str(row_key[0]).replace("📁 ", "").replace("📄 ", "").strip()
-        if name_cell == "..":
-            return FileEntry(name="..", size=0, is_dir=True)
-        for e in self._entries:
-            if e.name == name_cell:
-                return e
+        try:
+            # In Textual 0.81 la row key si recupera così
+            row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+            key_str = str(row_key.value)
+            if key_str == "__parent__":
+                return FileEntry(name="..", size=0, is_dir=True)
+            for e in self._entries:
+                if e.name == key_str:
+                    return e
+        except Exception:
+            pass
         return None
 
     def enter_selected(self):
@@ -651,6 +650,18 @@ class FtuiApp(App):
         if not self._client:
             self.notify("Not connected to a remote server.", severity="warning")
             return
+
+        # Sync active pane dal widget che ha il focus
+        try:
+            focused = self.focused
+            if focused and hasattr(focused, "id"):
+                if focused.id == "local-table":
+                    self._active_pane = "local"
+                elif focused.id == "remote-table":
+                    self._active_pane = "remote"
+        except Exception:
+            pass
+
         active = self._active_file_pane()
         entry = active.get_selected_entry()
         if not entry or entry.name == "..":
@@ -660,14 +671,15 @@ class FtuiApp(App):
             self.notify("Directory transfer not supported yet.", severity="warning")
             return
 
+        import posixpath
         if active.is_local:
-            # Upload
+            # Upload: locale -> remoto
             local_path = os.path.join(active.current_path, entry.name)
-            remote_path = os.path.join(self._remote_pane().current_path, entry.name)
+            remote_path = posixpath.join(self._remote_pane().current_path, entry.name)
             self._run_transfer("upload", local_path, remote_path, entry.name)
         else:
-            # Download
-            remote_path = os.path.join(active.current_path, entry.name)
+            # Download: remoto -> locale
+            remote_path = posixpath.join(active.current_path, entry.name)
             local_path = os.path.join(self._local_pane().current_path, entry.name)
             self._run_transfer("download", local_path, remote_path, entry.name)
 
