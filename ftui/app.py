@@ -673,23 +673,69 @@ class FtuiApp(App):
         active = self._active_file_pane()
         entry = active.get_selected_entry()
         if not entry or entry.name == "..":
-            self.notify("Select a file to transfer.", severity="warning")
-            return
-        if entry.is_dir:
-            self.notify("Directory transfer not supported yet.", severity="warning")
+            self.notify("Select a file or directory to transfer.", severity="warning")
             return
 
         import posixpath
         if active.is_local:
-            # Upload: locale -> remoto
             local_path = os.path.join(active.current_path, entry.name)
             remote_path = posixpath.join(self._remote_pane().current_path, entry.name)
-            self._run_transfer("upload", local_path, remote_path, entry.name)
+            if entry.is_dir:
+                self._run_transfer_dir("upload", local_path, remote_path, entry.name)
+            else:
+                self._run_transfer("upload", local_path, remote_path, entry.name)
         else:
-            # Download: remoto -> locale
             remote_path = posixpath.join(active.current_path, entry.name)
             local_path = os.path.join(self._local_pane().current_path, entry.name)
-            self._run_transfer("download", local_path, remote_path, entry.name)
+            if entry.is_dir:
+                self._run_transfer_dir("download", local_path, remote_path, entry.name)
+            else:
+                self._run_transfer("download", local_path, remote_path, entry.name)
+
+    def _run_transfer_dir(self, direction: str, local: str, remote: str, name: str):
+        bar = self.query_one("#transfer-bar")
+        label = self.query_one("#transfer-label", Label)
+        progress = self.query_one("#transfer-progress", ProgressBar)
+        bar.add_class("visible")
+        arrow = "↑" if direction == "upload" else "↓"
+
+        # Conta i file totali per la progress
+        def _count_local(path: str) -> int:
+            return sum(1 for _ in Path(path).rglob("*") if Path(_).is_file())
+
+        counters = {"done": 0, "total": 0}
+
+        def _cb(transferred: int, total: int):
+            # chiamato per ogni file singolo; aggiorniamo il label
+            if counters["total"] > 0:
+                pct = int(counters["done"] / counters["total"] * 100)
+                self.call_from_thread(progress.update, progress=pct)
+                self.call_from_thread(
+                    label.update,
+                    f" {arrow} {name}/  [{counters['done']}/{counters['total']} file]  "
+                )
+
+        def _file_done_cb(transferred: int, total: int):
+            if transferred == total and total > 0:
+                counters["done"] += 1
+            _cb(transferred, total)
+
+        def _run():
+            try:
+                if direction == "upload":
+                    counters["total"] = _count_local(local)
+                    self.call_from_thread(label.update, f" {arrow} {name}/  [0/{counters['total']} file]  ")
+                    self._client.upload_dir(local, remote, _file_done_cb)
+                else:
+                    # per il download contiamo dopo il primo ls (approssimazione)
+                    self.call_from_thread(label.update, f" {arrow} {name}/  [scaricando...]  ")
+                    self._client.download_dir(remote, local, _file_done_cb)
+                self.call_from_thread(self._transfer_done, name, direction)
+            except Exception as e:
+                self.call_from_thread(self.notify, f"Transfer failed: {e}", severity="error")
+                self.call_from_thread(bar.remove_class, "visible")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _run_transfer(self, direction: str, local: str, remote: str, name: str):
         bar = self.query_one("#transfer-bar")
