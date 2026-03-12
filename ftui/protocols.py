@@ -78,7 +78,10 @@ class FTPClient:
         return self.cwd
 
     def upload(self, local: str, remote: str, cb: ProgressCallback = None):
-        size = os.path.getsize(local)
+        try:
+            size = os.path.getsize(local)
+        except Exception:
+            size = 0
         transferred = 0
 
         def _cb(data: bytes):
@@ -87,11 +90,19 @@ class FTPClient:
             if cb:
                 cb(transferred, size)
 
+        try:
+            self._ftp.voidcmd("TYPE I")  # forza modalità binaria
+        except Exception:
+            pass
+
         with open(local, "rb") as f:
             self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
 
     def download(self, remote: str, local: str, cb: ProgressCallback = None):
-        size = self._ftp.size(remote) or 0
+        try:
+            size = self._ftp.size(remote) or 0
+        except Exception:
+            size = 0
         transferred = 0
 
         def _cb(data: bytes):
