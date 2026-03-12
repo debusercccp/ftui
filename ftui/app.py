@@ -501,10 +501,18 @@ class FilePane(Vertical):
             return
         if entry.is_dir:
             if entry.name == "..":
-                parent = str(Path(self.current_path).parent)
+                if self.is_local:
+                    parent = str(Path(self.current_path).parent)
+                else:
+                    import posixpath
+                    parent = posixpath.dirname(self.current_path.rstrip("/")) or "/"
                 self.navigate(parent)
             else:
-                self.navigate(os.path.join(self.current_path, entry.name))
+                if self.is_local:
+                    self.navigate(os.path.join(self.current_path, entry.name))
+                else:
+                    import posixpath
+                    self.navigate(posixpath.join(self.current_path, entry.name))
 
     def refresh_current(self):
         self.navigate(self.current_path)
