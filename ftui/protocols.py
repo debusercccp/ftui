@@ -123,6 +123,33 @@ class FTPClient:
     def rename(self, old: str, new: str):
         self._ftp.rename(old, new)
 
+    def upload_dir(self, local_dir: str, remote_dir: str, cb: ProgressCallback = None):
+        """Carica ricorsivamente una directory locale su remoto."""
+        import posixpath
+        try:
+            self.mkdir(remote_dir)
+        except Exception:
+            pass
+        for item in sorted(Path(local_dir).iterdir()):
+            remote_path = posixpath.join(remote_dir, item.name)
+            if item.is_dir():
+                self.upload_dir(str(item), remote_path, cb)
+            else:
+                self.upload(str(item), remote_path, cb)
+
+    def download_dir(self, remote_dir: str, local_dir: str, cb: ProgressCallback = None):
+        """Scarica ricorsivamente una directory remota in locale."""
+        import posixpath
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        entries = self.ls(remote_dir)
+        for entry in entries:
+            remote_path = posixpath.join(remote_dir, entry.name)
+            local_path = os.path.join(local_dir, entry.name)
+            if entry.is_dir:
+                self.download_dir(remote_path, local_path, cb)
+            else:
+                self.download(remote_path, local_path, cb)
+
     def disconnect(self):
         try:
             self._ftp.quit()
@@ -224,6 +251,31 @@ class SFTPClient:
     def rename(self, old: str, new: str):
         self._sftp.rename(old, new)
 
+    def upload_dir(self, local_dir: str, remote_dir: str, cb: ProgressCallback = None):
+        import posixpath
+        try:
+            self._sftp.mkdir(remote_dir)
+        except Exception:
+            pass
+        for item in sorted(Path(local_dir).iterdir()):
+            remote_path = posixpath.join(remote_dir, item.name)
+            if item.is_dir():
+                self.upload_dir(str(item), remote_path, cb)
+            else:
+                self.upload(str(item), remote_path, cb)
+
+    def download_dir(self, remote_dir: str, local_dir: str, cb: ProgressCallback = None):
+        import posixpath
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        entries = self.ls(remote_dir)
+        for entry in entries:
+            remote_path = posixpath.join(remote_dir, entry.name)
+            local_path = os.path.join(local_dir, entry.name)
+            if entry.is_dir:
+                self.download_dir(remote_path, local_path, cb)
+            else:
+                self.download(remote_path, local_path, cb)
+
     def disconnect(self):
         self._sftp.close()
         self._ssh.close()
@@ -300,6 +352,12 @@ class SCPClient:
 
     def rename(self, old: str, new: str):
         self._inner.rename(old, new)
+
+    def upload_dir(self, local_dir: str, remote_dir: str, cb: ProgressCallback = None):
+        self._inner.upload_dir(local_dir, remote_dir, cb)
+
+    def download_dir(self, remote_dir: str, local_dir: str, cb: ProgressCallback = None):
+        self._inner.download_dir(remote_dir, local_dir, cb)
 
     def disconnect(self):
         self._inner.disconnect()
