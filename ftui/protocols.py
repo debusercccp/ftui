@@ -54,6 +54,7 @@ class FTPClient:
         else:
             self._ftp = ftplib.FTP()
         self._ftp.connect(host, port, timeout=15)
+        self._ftp.encoding = "latin-1"  # evita crash UTF-8 su server non standard
         self._ftp.login(user, password)
         if tls:
             self._ftp.prot_p()  # encrypted data channel
@@ -89,11 +90,6 @@ class FTPClient:
             transferred += len(data)
             if cb:
                 cb(transferred, size)
-
-        try:
-            self._ftp.voidcmd("TYPE I")  # forza modalità binaria
-        except Exception:
-            pass
 
         with open(local, "rb") as f:
             self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
@@ -137,6 +133,8 @@ class FTPClient:
 def _parse_ftp_line(line: str) -> Optional[FileEntry]:
     """Parse Unix-style LIST output."""
     try:
+        # normalizza eventuali caratteri non stampabili
+        line = line.encode("latin-1", errors="replace").decode("latin-1")
         parts = line.split(None, 8)
         if len(parts) < 9:
             return None
