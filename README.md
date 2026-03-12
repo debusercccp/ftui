@@ -27,7 +27,7 @@ pip install -e . --break-system-package
 ## Avvio
 
 ```bash
-python -m ftui.app
+ftui
 ```
 
 ## Tasti
