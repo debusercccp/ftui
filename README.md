@@ -27,8 +27,18 @@ pip install -e . --break-system-package
 ## Avvio
 
 ```bash
+python3 -m ftui.app
+```
+oppure fai questo
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+e poi semplicemente:
+```
 ftui
 ```
+
 
 ## Tasti
 
