@@ -29,12 +29,13 @@ pip install -e . --break-system-package
 ```bash
 python3 -m ftui.app
 ```
-oppure fai questo
+Con pip install -e . nel venv o globalmente, il comando ftui funziona perché pip crea uno script in ~/.local/bin/ o nel venv. Ma se quel percorso non è nel PATH, il comando non viene trovato.
+Quindi fai questo:
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
-e poi semplicemente:
+e poi semplicemente puoi farlo runnare così:
 ```
 ftui
 ```
