@@ -22,7 +22,6 @@ from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
-    Footer,
     Header,
     Input,
     Label,
@@ -501,7 +500,6 @@ class FtuiApp(App):
             "F2 Connect   F3 Bookmarks   F5 Transfer   F7 Mkdir   F8 Delete   F9 Rename   Tab Switch   Enter Open   Q Quit",
             classes="status-bar",
         )
-        yield Footer()
 
     def on_mount(self):
         self.action_connect()
