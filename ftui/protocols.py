@@ -160,14 +160,17 @@ class FTPClient:
 def _parse_ftp_line(line: str) -> Optional[FileEntry]:
     """Parse Unix-style LIST output."""
     try:
-        # normalizza eventuali caratteri non stampabili
         line = line.encode("latin-1", errors="replace").decode("latin-1")
         parts = line.split(None, 8)
         if len(parts) < 9:
             return None
         perms, _, _, _, size_str, month, day, year_or_time, name = parts
+        # alcuni server restituiscono il path completo nel nome — teniamo solo il basename
+        name = name.strip().split("/")[-1]
+        if not name:
+            return None
         is_dir = perms.startswith("d")
-        size = int(size_str) if not is_dir else 0
+        size   = int(size_str) if not is_dir else 0
         return FileEntry(name=name, size=size, is_dir=is_dir, permissions=perms)
     except Exception:
         return None
