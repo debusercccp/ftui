@@ -714,13 +714,23 @@ class FtuiApp(App):
         self.push_screen(ConfirmModal(f"Delete '{entry.name}'?"), _handle)
 
     def _delete_remote_dir(self, path: str):
-        entries = self._client.ls(path)
+        """Cancella ricorsivamente una directory remota svuotandola prima."""
+        try:
+            entries = self._client.ls(path)
+        except Exception as e:
+            self.notify(f"Cannot list {path}: {e}", severity="error")
+            return
         for e in entries:
             child = posixpath.join(path, e.name)
             if e.is_dir:
                 self._delete_remote_dir(child)
             else:
-                self._client.delete(child, is_dir=False)
+                try:
+                    self._client.delete(child, is_dir=False)
+                except Exception as ex:
+                    self.notify(f"Cannot delete {child}: {ex}", severity="error")
+                    return
+        # ora la directory è vuota, possiamo rimuoverla
         self._client.delete(path, is_dir=True)
 
     def action_rename_selected(self):
