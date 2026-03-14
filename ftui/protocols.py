@@ -65,10 +65,15 @@ class FTPClient:
     def ls(self, path: str = ".") -> list[FileEntry]:
         entries: list[FileEntry] = []
         lines: list[str] = []
-        self._ftp.dir(path, lines.append)
+        try:
+            # -a include hidden files, alcuni server lo supportano
+            self._ftp.dir(f"-a {path}", lines.append)
+        except Exception:
+            lines = []
+            self._ftp.dir(path, lines.append)
         for line in lines:
             entry = _parse_ftp_line(line)
-            if entry:
+            if entry and entry.name not in (".", ".."):
                 entries.append(entry)
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
@@ -116,7 +121,18 @@ class FTPClient:
 
     def delete(self, path: str, is_dir: bool = False):
         if is_dir:
-            self._ftp.rmd(path)
+            # prova in ordine: RMD, XRMD, SITE RMDIR
+            for cmd in (
+                lambda: self._ftp.rmd(path),
+                lambda: self._ftp.voidcmd(f"XRMD {path}"),
+                lambda: self._ftp.voidcmd(f"SITE RMDIR {path}"),
+            ):
+                try:
+                    cmd()
+                    return
+                except ftplib.error_perm as e:
+                    last = e
+            raise last
         else:
             self._ftp.delete(path)
 
