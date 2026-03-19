@@ -1,5 +1,4 @@
 # ftui
-
 Dual-pane TUI file transfer client, alternativa a FileZilla da terminale.
 Supporta FTP, FTPS, SFTP e SCP.
 
@@ -21,39 +20,36 @@ Supporta FTP, FTPS, SFTP e SCP.
 
 ```bash
 cd ftui
-pip install -e . --break-system-package
+pip install -e . --break-system-packages
 ```
 
 ## Avvio
 
 ```bash
-python3 -m ftui.app
+ftui
 ```
-Con pip install -e . nel venv o globalmente, il comando ftui funziona perché pip crea uno script in ~/.local/bin/ o nel venv. Ma se quel percorso non è nel PATH, il comando non viene trovato.
-Quindi fai questo:
+
+Se il comando non viene trovato, aggiungi `~/.local/bin` al PATH:
+
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
-e poi semplicemente puoi farlo runnare così:
-```
-ftui
-```
-
 
 ## Tasti
 
-| Tasto  | Azione                        |
-|--------|-------------------------------|
-| F2     | Nuova connessione             |
-| F3     | Bookmark salvati              |
-| F5     | Trasferisci file selezionato  |
-| F7     | Crea directory                |
-| F8     | Elimina                       |
-| F9     | Rinomina                      |
-| Tab    | Cambia pannello               |
-| Enter  | Entra nella directory         |
-| Q      | Esci                          |
+| Tasto  | Azione                              |
+|--------|-------------------------------------|
+| F2     | Nuova connessione                   |
+| F3     | Bookmark salvati                    |
+| F5     | Trasferisci file selezionato        |
+| F6     | NAS Sync (FTP → home locale)        |
+| F7     | Crea directory                      |
+| F8     | Elimina                             |
+| F9     | Rinomina                            |
+| Tab    | Cambia pannello                     |
+| Enter  | Entra nella directory               |
+| Q      | Esci                                |
 
 ## Protocolli
 
@@ -69,15 +65,30 @@ ftui
 Quando ti connetti puoi salvare la connessione con un nome.
 I bookmark vengono salvati in `~/.config/ftui/bookmarks.json`.
 
+## NAS Sync (F6)
+
+Sincronizza una o più directory dal NAS FTP verso la home locale.
+
+- Se il file **non esiste in locale** viene scaricato automaticamente
+- Se il **NAS è più recente** viene chiesto cosa fare (NAS / locale / salta)
+- Se il **locale è più recente** viene lasciato intatto
+
+Se sei già connesso via F2 a un server FTP, il modal riusa la connessione esistente.
+Altrimenti inserisci host, porta, utente e password direttamente nel modal.
+
 ## Struttura
 
 ```
 ftui/
 ├── ftui/
 │   ├── __init__.py
-│   ├── app.py          -- TUI principale (Textual)
+│   ├── app.py          -- FtuiApp: entry point, bindings, azioni
+│   ├── styles.py       -- CSS centralizzato
+│   ├── modals.py       -- ConnectModal, BookmarksModal, InputModal, ConfirmModal
+│   ├── pane.py         -- FilePane: pannello locale/remoto
+│   ├── nas_sync.py     -- NasSyncModal, ConflictModal
 │   ├── protocols.py    -- Astrazione FTP/FTPS/SFTP/SCP
-│   └── bookmarks.py    -- Salvataggio connessioni
+│   └── bookmarks.py    -- Salvataggio connessioni (~/.config/ftui/bookmarks.json)
 ├── pyproject.toml
 └── README.md
 ```
