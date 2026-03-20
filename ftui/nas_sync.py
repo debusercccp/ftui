@@ -65,12 +65,12 @@ class NasSyncModal(ModalScreen):
     def on_screen_resume(self) -> None:
         self._running = False
         self._log_msgs.clear()
-        log.debug("NasSyncModal resume, _running resettato")
+        log.debug("NasSyncModal resume, _running resettato")    
 
     def compose(self) -> ComposeResult:
         with Container(classes="modal-screen"):
             with Vertical(classes="modal-box", id="sync-box"):
-                yield Label("NAS Sync  (FTP → Home)", classes="modal-title")
+                yield Label("NAS Sync  (bidirezionale)", classes="modal-title")
 
                 if not self._client:
                     yield Label("Host NAS", classes="field-label")
@@ -164,13 +164,18 @@ class NasSyncModal(ModalScreen):
             self.app.call_from_thread(self._finish)
             return
 
-        self.app.call_from_thread(self._log, f"Connesso. Sync: {', '.join(sync_dirs)}", "ok")
+        self.app.call_from_thread(self._log, f"Connesso. Sync bidirezionale: {', '.join(sync_dirs)}", "ok")
 
-        total_dl = 0
+        total_dl = total_ul = 0
         for d in sync_dirs:
-            total_dl += self._sync_dir(client, d, local_base)
+            dl, ul = self._sync_dir(client, d, local_base)
+            total_dl += dl
+            total_ul += ul
 
-        self.app.call_from_thread(self._set_status, f"✔ Completato — {total_dl} file scaricati")
+        self.app.call_from_thread(
+            self._set_status,
+            f"✔ Completato — ↓{total_dl} scaricati  ↑{total_ul} caricati"
+        )
         self.app.call_from_thread(self._finish)
 
     def _get_or_connect(self) -> FTPClient:
@@ -185,46 +190,59 @@ class NasSyncModal(ModalScreen):
         log.debug(f"nuova connessione {host}:{port} utente={user}")
         return FTPClient(host, port, user, pw, tls=False)
 
-    def _sync_dir(self, client: FTPClient, rel_dir: str, local_base: Path) -> int:
+    def _sync_dir(self, client: FTPClient, rel_dir: str, local_base: Path) -> tuple[int, int]:
+        """Ritorna (downloaded, uploaded)."""
         self.app.call_from_thread(self._log, f"── {rel_dir} ──", "info")
         log.debug(f"_sync_dir: {rel_dir}")
+
+        # Lista remota
         try:
-            entries = client.ls(rel_dir)
-            log.debug(f"ls {rel_dir}: {len(entries)} entry")
+            remote_entries = client.ls(rel_dir)
+            log.debug(f"ls {rel_dir}: {len(remote_entries)} entry")
         except Exception as e:
             log.debug(f"ls fallito su {rel_dir}: {e}")
             self.app.call_from_thread(self._log, f"  Errore ls {rel_dir}: {e}", "err")
-            return 0
-        return self._process_entries(client, entries, rel_dir, local_base / rel_dir)
+            return 0, 0
+
+        return self._process_entries(client, remote_entries, rel_dir, local_base / rel_dir)
 
     def _process_entries(
         self,
         client: FTPClient,
-        entries: list[FileEntry],
+        remote_entries: list[FileEntry],
         remote_dir: str,
         local_dir: Path,
-    ) -> int:
-        downloaded = 0
+    ) -> tuple[int, int]:
+        """Sync bidirezionale. Ritorna (downloaded, uploaded)."""
+        downloaded = uploaded = 0
         local_dir.mkdir(parents=True, exist_ok=True)
 
-        for entry in entries:
+        # Indice file remoti per nome
+        remote_map: dict[str, FileEntry] = {e.name: e for e in remote_entries}
+
+        # ── file/dir remoti → locale ──────────────────────────────────────
+        for entry in remote_entries:
             remote_path = posixpath.join(remote_dir, entry.name)
             local_path  = local_dir / entry.name
 
             if entry.is_dir:
                 try:
                     sub = client.ls(remote_path)
-                    downloaded += self._process_entries(client, sub, remote_path, local_path)
+                    dl, ul = self._process_entries(client, sub, remote_path, local_path)
+                    downloaded += dl
+                    uploaded   += ul
                 except Exception as e:
                     self.app.call_from_thread(self._log, f"  Errore in {remote_path}: {e}", "err")
                 continue
 
             if not local_path.exists():
+                # Solo sul NAS → scarica
                 self.app.call_from_thread(self._log, f"  ↓ {entry.name}", "info")
                 self._download(client, remote_path, local_path)
                 downloaded += 1
                 continue
 
+            # Esiste su entrambi → confronta timestamp
             local_ts  = int(local_path.stat().st_mtime)
             remote_ts = self._get_remote_mtime(client, remote_path, entry)
 
@@ -235,12 +253,50 @@ class NasSyncModal(ModalScreen):
             delta = remote_ts - local_ts
             if abs(delta) <= CONFLICT_THRESHOLD:
                 self.app.call_from_thread(self._log, f"  = {entry.name}", "ok")
-            elif delta > 0:
-                self._ask_conflict(client, entry.name, remote_path, local_path, local_ts, remote_ts)
-            else:
-                self.app.call_from_thread(self._log, f"  ✓ locale recente: {entry.name}", "ok")
+                continue
 
-        return downloaded
+            # Conflitto: chiedi sempre
+            choice = self._ask_conflict(entry.name, remote_path, local_path, local_ts, remote_ts)
+            if choice == "nas":
+                self.app.call_from_thread(self._log, f"  ↓ NAS vince: {entry.name}", "info")
+                self._download(client, remote_path, local_path)
+                downloaded += 1
+            elif choice == "local":
+                self.app.call_from_thread(self._log, f"  ↑ Locale vince: {entry.name}", "info")
+                self._upload(client, local_path, remote_path)
+                uploaded += 1
+            else:
+                self.app.call_from_thread(self._log, f"  ~ saltato: {entry.name}", "warn")
+
+        # ── file locali non presenti sul NAS → upload ─────────────────────
+        try:
+            local_items = list(local_dir.iterdir())
+        except Exception:
+            local_items = []
+
+        for local_path in local_items:
+            if local_path.name in remote_map:
+                continue  # già gestito sopra
+
+            remote_path = posixpath.join(remote_dir, local_path.name)
+
+            if local_path.is_dir():
+                # Directory solo in locale: crea sul NAS e carica ricorsivamente
+                try:
+                    client.mkdir(remote_path)
+                except Exception:
+                    pass  # potrebbe già esistere
+                dl, ul = self._process_entries(client, [], remote_path, local_path)
+                downloaded += dl
+                uploaded   += ul
+                continue
+
+            # File solo in locale → upload
+            self.app.call_from_thread(self._log, f"  ↑ {local_path.name}", "info")
+            self._upload(client, local_path, remote_path)
+            uploaded += 1
+
+        return downloaded, uploaded
 
     def _get_remote_mtime(self, client: FTPClient, remote_path: str, entry: FileEntry) -> int:
         try:
@@ -269,15 +325,23 @@ class NasSyncModal(ModalScreen):
             log.debug(f"download fallito {remote}: {e}")
             self.app.call_from_thread(self._log, f"  ✗ errore download {local.name}: {e}", "err")
 
+    def _upload(self, client: FTPClient, local: Path, remote: str):
+        try:
+            client.upload(str(local), remote)
+            log.debug(f"caricato: {local} → {remote}")
+        except Exception as e:
+            log.debug(f"upload fallito {remote}: {e}")
+            self.app.call_from_thread(self._log, f"  ✗ errore upload {local.name}: {e}", "err")
+
     def _ask_conflict(
         self,
-        client: FTPClient,
         name: str,
         remote_path: str,
         local_path: Path,
         local_ts: int,
         remote_ts: int,
-    ):
+    ) -> str:
+        """Apre ConflictModal e ritorna la scelta ('nas' | 'local' | 'skip')."""
         result_holder: list[str] = []
         event = threading.Event()
 
@@ -289,15 +353,7 @@ class NasSyncModal(ModalScreen):
 
         self.app.call_from_thread(_show)
         event.wait(timeout=300)
-
-        choice = result_holder[0] if result_holder else "skip"
-        if choice == "nas":
-            self.app.call_from_thread(self._log, f"  ↓ NAS vince: {name}", "info")
-            self._download(client, remote_path, local_path)
-        elif choice == "local":
-            self.app.call_from_thread(self._log, f"  ✓ locale mantenuto: {name}", "ok")
-        else:
-            self.app.call_from_thread(self._log, f"  ~ saltato: {name}", "warn")
+        return result_holder[0] if result_holder else "skip"
 
     def _finish(self):
         log.debug("_finish chiamato")
