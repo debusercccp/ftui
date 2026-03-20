@@ -146,7 +146,9 @@ class FtuiApp(App):
     # ── NAS sync ──────────────────────────────────────────────────────────
 
     def action_nas_sync(self):
-        self.push_screen(NasSyncModal(self._client))
+        screen = NasSyncModal(self._client)
+        self.push_screen(screen)
+        self.call_after_refresh(screen.__setattr__, "_running", False)
 
     # ── transfer ──────────────────────────────────────────────────────────
 
