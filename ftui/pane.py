@@ -13,6 +13,14 @@ from textual.widgets import DataTable, Label
 from ftui.protocols import FileEntry
 
 
+def _sanitize(s: str) -> str:
+    """Converte una stringa in UTF-8 valido, sostituendo caratteri problematici."""
+    try:
+        return s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    except Exception:
+        return s
+
+
 class FilePane(Vertical):
     current_path: reactive[str] = reactive("", layout=True)
 
@@ -73,10 +81,18 @@ class FilePane(Vertical):
         if path not in ("/", ""):
             table.add_row("[DIR] ..", "", "", "", key="__parent__")
         for e in entries:
-            prefix = "[DIR]" if e.is_dir else "     "
-            mod    = e.modified.strftime("%Y-%m-%d %H:%M") if e.modified else ""
-            table.add_row(f"{prefix} {e.name}", e.size_human, mod, e.permissions, key=e.name)
-        self.query_one(f"#{self.id}-path", Label).update(f" {path}")
+            prefix   = "[DIR]" if e.is_dir else "     "
+            mod      = e.modified.strftime("%Y-%m-%d %H:%M") if e.modified else ""
+            # sanitize del nome per evitare crash UTF-8 con caratteri non-ASCII
+            disp_name = _sanitize(e.name)
+            table.add_row(
+                f"{prefix} {disp_name}",
+                e.size_human,
+                mod,
+                e.permissions,
+                key=e.name,   # key rimane il nome originale per la navigazione
+            )
+        self.query_one(f"#{self.id}-path", Label).update(f" {_sanitize(path)}")
 
     def get_selected_entry(self) -> Optional[FileEntry]:
         table = self.query_one(DataTable)

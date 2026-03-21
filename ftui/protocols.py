@@ -54,10 +54,12 @@ class FTPClient:
         else:
             self._ftp = ftplib.FTP()
         self._ftp.connect(host, port, timeout=15)
-        self._ftp.encoding = "latin-1"  # evita crash UTF-8 su server non standard
+        # Python 3.13: forza latin-1 sul socket reader per server che non parlano UTF-8
+        self._ftp.file = self._ftp.sock.makefile('r', encoding='latin-1')
+        self._ftp.encoding = 'latin-1'
         self._ftp.login(user, password)
         if tls:
-            self._ftp.prot_p()  # encrypted data channel
+            self._ftp.prot_p()
         self._ftp.set_pasv(True)
         self.cwd = self._ftp.pwd()
         self.protocol = "FTPS" if tls else "FTP"
@@ -100,11 +102,16 @@ class FTPClient:
             self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
 
     def download(self, remote: str, local: str, cb: ProgressCallback = None):
-        try:
-            size = self._ftp.size(remote) or 0
-        except Exception:
-            size = 0
+    # Usa RETR direttamente senza SIZE per evitare problemi con TYPE I
         transferred = 0
+        size = 0
+        try:
+        # Prova a ottenere la size senza cambiare tipo
+            resp = self._ftp.sendcmd(f"SIZE {remote}")
+            if resp.startswith("213 "):
+                size = int(resp[4:].strip())
+        except Exception:
+            pass
 
         def _cb(data: bytes):
             nonlocal transferred
@@ -174,14 +181,18 @@ class FTPClient:
 
 
 def _parse_ftp_line(line: str) -> Optional[FileEntry]:
-    """Parse Unix-style LIST output."""
+    """Parse Unix-style LIST output, gestisce encoding non-UTF8."""
     try:
-        line = line.encode("latin-1", errors="replace").decode("latin-1")
+        # Forza la stringa a essere valida rimuovendo caratteri problematici
+        if isinstance(line, bytes):
+            line = line.decode("latin-1", errors="replace")
+        else:
+            line = line.encode("latin-1", errors="replace").decode("latin-1", errors="replace")
+
         parts = line.split(None, 8)
         if len(parts) < 9:
             return None
         perms, _, _, _, size_str, month, day, year_or_time, name = parts
-        # alcuni server restituiscono il path completo nel nome — teniamo solo il basename
         name = name.strip().split("/")[-1]
         if not name:
             return None
@@ -190,8 +201,6 @@ def _parse_ftp_line(line: str) -> Optional[FileEntry]:
         return FileEntry(name=name, size=size, is_dir=is_dir, permissions=perms)
     except Exception:
         return None
-
-
 # ─────────────────────────────────────────────
 # SFTP
 # ─────────────────────────────────────────────
