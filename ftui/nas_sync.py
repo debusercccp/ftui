@@ -1,6 +1,7 @@
 """ftui/nas_sync.py — NAS Sync modal per ftui (F6)."""
 from __future__ import annotations
 
+import fnmatch
 import logging
 import posixpath
 import threading
@@ -25,6 +26,28 @@ from textual.widgets import Button, Input, Label, Static
 from ftui.protocols import FTPClient, FileEntry
 
 CONFLICT_THRESHOLD = 60
+
+EXCLUDE_PATTERNS = {
+    # git
+    ".git", ".gitignore", ".gitmodules", ".gitattributes",
+    # Python
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "*.pyc", "*.pyo", "*.egg-info", "dist", "build", ".venv", "venv", "env",
+    # Node
+    "node_modules", ".npm", "*.lock",
+    # Rust
+    "target",
+    # Editor / OS
+    ".DS_Store", "Thumbs.db", ".idea", ".vscode", "*.swp", "*.swo",
+    # Log / temp
+    "*.log", "*.tmp", "*.temp",
+}
+
+
+def _is_excluded(name: str) -> bool:
+    if name in EXCLUDE_PATTERNS:
+        return True
+    return any(fnmatch.fnmatch(name, pat) for pat in EXCLUDE_PATTERNS)
 
 
 class ConflictModal(ModalScreen):
@@ -60,9 +83,8 @@ class NasSyncModal(ModalScreen):
             existing_client if isinstance(existing_client, FTPClient) else None
         )
         self._running  = False
-        log.debug(f"NasSyncModal __init__, id={id(self)}")
         self._log_msgs: list[tuple[str, str]] = []
-
+        log.debug(f"NasSyncModal __init__, id={id(self)}")
 
     def compose(self) -> ComposeResult:
         with Container(classes="modal-screen"):
@@ -95,6 +117,8 @@ class NasSyncModal(ModalScreen):
                     yield Button("Chiudi",  id="sync-close")
                     yield Button("▶ Avvia", id="sync-start", classes="primary")
 
+    # ── helpers UI ────────────────────────────────────────────────────────
+
     def _log(self, msg: str, kind: str = "info"):
         log.debug(f"[{kind}] {msg}")
         ts   = datetime.now().strftime("%H:%M:%S")
@@ -121,13 +145,15 @@ class NasSyncModal(ModalScreen):
         except Exception:
             return default
 
+    # ── eventi ───────────────────────────────────────────────────────────
+
     @on(Button.Pressed, "#sync-close")
     def _close(self):
         self.dismiss(None)
 
     @on(Button.Pressed, "#sync-start")
     def _start(self):
-        log.debug(f"_start premuto, _running={self._running}")
+        log.debug(f"_start premuto, _running={self._running}, id={id(self)}")
         if self._running:
             return
         self._running = True
@@ -139,8 +165,10 @@ class NasSyncModal(ModalScreen):
     def action_dismiss_modal(self):
         self.dismiss(None)
 
+    # ── sync principale ───────────────────────────────────────────────────
+
     def _run_sync(self):
-        log.debug("_run_sync avviato")
+        log.debug(f"_run_sync avviato, id={id(self)}")
         try:
             client = self._get_or_connect()
             log.debug(f"client ok: {client}")
@@ -161,7 +189,7 @@ class NasSyncModal(ModalScreen):
             self.app.call_from_thread(self._finish)
             return
 
-        self.app.call_from_thread(self._log, f"Connesso. Sync: {', '.join(sync_dirs)}", "ok")
+        self.app.call_from_thread(self._log, f"Sync: {', '.join(sync_dirs)}", "ok")
 
         total_dl = total_ul = 0
         for d in sync_dirs:
@@ -176,7 +204,6 @@ class NasSyncModal(ModalScreen):
         self.app.call_from_thread(self._finish)
 
     def _get_or_connect(self) -> FTPClient:
-        log.debug("_get_or_connect")
         if self._client:
             log.debug("riuso client esistente")
             return self._client
@@ -210,7 +237,12 @@ class NasSyncModal(ModalScreen):
         local_dir.mkdir(parents=True, exist_ok=True)
         remote_map: dict[str, FileEntry] = {e.name: e for e in remote_entries}
 
+        # ── remoto → locale ───────────────────────────────────────────────
         for entry in remote_entries:
+            if _is_excluded(entry.name):
+                log.debug(f"escluso remoto: {entry.name}")
+                continue
+
             remote_path = posixpath.join(remote_dir, entry.name)
             local_path  = local_dir / entry.name
 
@@ -225,7 +257,7 @@ class NasSyncModal(ModalScreen):
                 continue
 
             if not local_path.exists():
-                self.app.call_from_thread(self._log, f"  down {entry.name}", "info")
+                self.app.call_from_thread(self._log, f"  ↓ {entry.name}", "info")
                 self._download(client, remote_path, local_path)
                 downloaded += 1
                 continue
@@ -244,22 +276,26 @@ class NasSyncModal(ModalScreen):
 
             choice = self._ask_conflict(entry.name, remote_path, local_path, local_ts, remote_ts)
             if choice == "nas":
-                self.app.call_from_thread(self._log, f"  down NAS vince: {entry.name}", "info")
+                self.app.call_from_thread(self._log, f"  ↓ NAS vince: {entry.name}", "info")
                 self._download(client, remote_path, local_path)
                 downloaded += 1
             elif choice == "local":
-                self.app.call_from_thread(self._log, f"  up Locale vince: {entry.name}", "info")
+                self.app.call_from_thread(self._log, f"  ↑ Locale vince: {entry.name}", "info")
                 self._upload(client, local_path, remote_path)
                 uploaded += 1
             else:
                 self.app.call_from_thread(self._log, f"  ~ saltato: {entry.name}", "warn")
 
+        # ── solo locale → upload ──────────────────────────────────────────
         try:
             local_items = list(local_dir.iterdir())
         except Exception:
             local_items = []
 
         for local_path in local_items:
+            if _is_excluded(local_path.name):
+                log.debug(f"escluso locale: {local_path.name}")
+                continue
             if local_path.name in remote_map:
                 continue
             remote_path = posixpath.join(remote_dir, local_path.name)
@@ -272,32 +308,29 @@ class NasSyncModal(ModalScreen):
                 downloaded += dl
                 uploaded   += ul
                 continue
-            self.app.call_from_thread(self._log, f"  up {local_path.name}", "info")
+            self.app.call_from_thread(self._log, f"  ↑ {local_path.name}", "info")
             self._upload(client, local_path, remote_path)
             uploaded += 1
 
         return downloaded, uploaded
 
+    # ── helpers I/O ───────────────────────────────────────────────────────
+
     def _get_remote_mtime(self, client: FTPClient, remote_path: str, entry: FileEntry) -> int:
         try:
-            resp = client._ftp.voidcmd(f"MDTM {remote_path}")
+            resp = client._ftp.sendcmd(f"MDTM {remote_path}")
+            if resp.startswith("213 "):
+                raw = resp[4:].strip()
+                if len(raw) >= 14:
+                    ts = int(datetime.strptime(raw[:14], "%Y%m%d%H%M%S").timestamp())
+                    log.debug(f"MDTM {remote_path}: {datetime.fromtimestamp(ts)}")
+                    return ts
         except Exception as e:
             log.debug(f"MDTM fallito {remote_path}: {e}")
-            resp = ""
-
-        if resp.startswith("213 "):
-            raw = resp[4:].strip()
-            if len(raw) >= 14:
-                try:
-                    ts = int(datetime.strptime(raw[:14], "%Y%m%d%H%M%S").timestamp())
-                    log.debug(f"MDTM {remote_path}: raw={raw} ts={ts} ({datetime.fromtimestamp(ts)})")
-                    return ts
-                except Exception as e:
-                    log.debug(f"MDTM parse fallito: {e}")
 
         if entry.modified:
             ts = int(entry.modified.timestamp())
-            log.debug(f"entry.modified {remote_path}: ts={ts} ({entry.modified})")
+            log.debug(f"entry.modified {remote_path}: {entry.modified}")
             return ts
 
         log.debug(f"nessun timestamp per {remote_path}")
@@ -349,7 +382,7 @@ class NasSyncModal(ModalScreen):
         return result_holder[0] if result_holder else "skip"
 
     def _finish(self):
-        log.debug("_finish chiamato")
+        log.debug(f"_finish chiamato, id={id(self)}")
         self._running = False
         try:
             self.query_one("#sync-start", Button).disabled = False

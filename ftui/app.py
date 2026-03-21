@@ -62,7 +62,7 @@ class FtuiApp(App):
     def on_mount(self):
         self.action_connect()
 
-    # ── pane helpers ─────────────────────────────────────────────────────
+    # ── pane helpers ──────────────────────────────────────────────────────
 
     def _local_pane(self)  -> FilePane: return self.query_one("#local",  FilePane)
     def _remote_pane(self) -> FilePane: return self.query_one("#remote", FilePane)
@@ -80,7 +80,7 @@ class FtuiApp(App):
         except Exception:
             pass
 
-    # ── navigation ───────────────────────────────────────────────────────
+    # ── navigation ────────────────────────────────────────────────────────
 
     def action_switch_pane(self):
         self._active_pane = "remote" if self._active_pane == "local" else "local"
@@ -147,8 +147,11 @@ class FtuiApp(App):
 
     def action_nas_sync(self):
         screen = NasSyncModal(self._client)
+        def _reset():
+            screen._running = False
+            screen._log_msgs.clear()
         self.push_screen(screen)
-        self.call_after_refresh(screen.__setattr__, "_running", False)
+        self.call_after_refresh(_reset)
 
     # ── transfer ──────────────────────────────────────────────────────────
 
