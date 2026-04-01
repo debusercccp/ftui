@@ -10,7 +10,6 @@ All clients expose the same interface:
   rename(old, new)
   disconnect()
 """
-
 from __future__ import annotations
 import ftplib
 import os
@@ -56,13 +55,12 @@ class FTPClient:
         self._password = password
         self._tls      = tls
         self._ftp      = None
-        self._lock     = threading.RLock()  # Usiamo RLock per i trasferimenti di intere cartelle
+        self._lock     = threading.RLock()
         self._connect()
         self.protocol = "FTPS" if tls else "FTP"
 
     @contextlib.contextmanager
     def _busy_lock(self):
-        """Se c'è un trasferimento in corso, blocca il nuovo comando istantaneamente senza far freezare la UI."""
         if not self._lock.acquire(blocking=False):
             raise RuntimeError("Operazione rifiutata: trasferimento in corso. Attendi la fine.")
         try:
@@ -98,6 +96,8 @@ class FTPClient:
         try:
             return fn()
         except ftplib.error_reply as e:
+            if str(e).startswith("2"):
+                return
             raise
         except (BrokenPipeError, EOFError, ConnectionResetError, OSError):
             self._reconnect()
@@ -155,19 +155,20 @@ class FTPClient:
             except Exception:
                 size = 0
 
-            def _do_transfer():
-                transferred = 0
-                with open(local, "wb") as out:
-                    def _chunk(data: bytes):
-                        nonlocal transferred
-                        out.write(data)
-                        transferred += len(data)
-                        if cb:
-                            cb(transferred, size)
-                    
-                    self._ftp.retrbinary(f"RETR {remote}", _chunk)
+            transferred = 0
+            out = open(local, "wb")
 
-            self._run(_do_transfer)
+            def _chunk(data: bytes):
+                nonlocal transferred
+                out.write(data)
+                transferred += len(data)
+                if cb:
+                    cb(transferred, size)
+
+            try:
+                self._run(lambda: self._ftp.retrbinary(f"RETR {remote}", _chunk))
+            finally:
+                out.close()
 
     def mkdir(self, path: str):
         with self._busy_lock():
@@ -177,6 +178,7 @@ class FTPClient:
         with self._busy_lock():
             def _do():
                 if is_dir:
+                    last = Exception("no command tried")
                     for cmd in (
                         lambda: self._ftp.rmd(path),
                         lambda: self._ftp.voidcmd(f"XRMD {path}"),
@@ -197,38 +199,36 @@ class FTPClient:
             self._run(lambda: self._ftp.rename(old, new))
 
     def upload_dir(self, local_dir: str, remote_dir: str, cb: ProgressCallback = None):
-        with self._busy_lock():
-            import posixpath
-            try:
-                self.mkdir(remote_dir)
-            except Exception:
-                pass
-            for item in sorted(Path(local_dir).iterdir()):
-                remote_path = posixpath.join(remote_dir, item.name)
-                if item.is_dir():
-                    self.upload_dir(str(item), remote_path, cb)
-                else:
-                    self.upload(str(item), remote_path, cb)
+        import posixpath
+        try:
+            self.mkdir(remote_dir)
+        except Exception:
+            pass
+        for item in sorted(Path(local_dir).iterdir()):
+            remote_path = posixpath.join(remote_dir, item.name)
+            if item.is_dir():
+                self.upload_dir(str(item), remote_path, cb)
+            else:
+                self.upload(str(item), remote_path, cb)
 
     def download_dir(self, remote_dir: str, local_dir: str, cb: ProgressCallback = None):
-        with self._busy_lock():
-            import posixpath
-            Path(local_dir).mkdir(parents=True, exist_ok=True)
-            entries = self.ls(remote_dir)
-            for entry in entries:
-                remote_path = posixpath.join(remote_dir, entry.name)
-                local_path = os.path.join(local_dir, entry.name)
-                if entry.is_dir:
-                    self.download_dir(remote_path, local_path, cb)
-                else:
-                    self.download(remote_path, local_path, cb)
+        import posixpath
+        Path(local_dir).mkdir(parents=True, exist_ok=True)
+        entries = self.ls(remote_dir)
+        for entry in entries:
+            remote_path = posixpath.join(remote_dir, entry.name)
+            local_path = os.path.join(local_dir, entry.name)
+            if entry.is_dir:
+                self.download_dir(remote_path, local_path, cb)
+            else:
+                self.download(remote_path, local_path, cb)
 
     def disconnect(self):
-        with self._busy_lock():
-            try:
-                self._ftp.quit()
-            except Exception:
-                self._ftp.close()
+        try:
+            self._ftp.quit()
+        except Exception:
+            self._ftp.close()
+
 
 def _parse_ftp_line(line: str) -> Optional[FileEntry]:
     """Parse Unix-style LIST output."""
@@ -238,7 +238,6 @@ def _parse_ftp_line(line: str) -> Optional[FileEntry]:
         if len(parts) < 9:
             return None
         perms, _, _, _, size_str, month, day, year_or_time, name = parts
-        # alcuni server restituiscono il path completo nel nome — teniamo solo il basename
         name = name.strip().split("/")[-1]
         if not name:
             return None
@@ -262,7 +261,6 @@ class SFTPClient:
         key_path: Optional[str] = None,
     ):
         import paramiko
-
         self._ssh = paramiko.SSHClient()
         self._ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         kwargs: dict = dict(hostname=host, port=port, username=user, timeout=15)
@@ -279,15 +277,13 @@ class SFTPClient:
         entries = []
         for attr in self._sftp.listdir_attr(path):
             is_dir = stat.S_ISDIR(attr.st_mode or 0)
-            entries.append(
-                FileEntry(
-                    name=attr.filename,
-                    size=attr.st_size or 0,
-                    is_dir=is_dir,
-                    modified=datetime.fromtimestamp(attr.st_mtime or 0),
-                    permissions=_mode_to_str(attr.st_mode or 0),
-                )
-            )
+            entries.append(FileEntry(
+                name=attr.filename,
+                size=attr.st_size or 0,
+                is_dir=is_dir,
+                modified=datetime.fromtimestamp(attr.st_mtime or 0),
+                permissions=_mode_to_str(attr.st_mode or 0),
+            ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
@@ -298,21 +294,17 @@ class SFTPClient:
 
     def upload(self, local: str, remote: str, cb: ProgressCallback = None):
         size = os.path.getsize(local)
-
         def _cb(transferred, total):
             if cb:
                 cb(transferred, size)
-
         self._sftp.put(local, remote, callback=_cb)
 
     def download(self, remote: str, local: str, cb: ProgressCallback = None):
         attrs = self._sftp.stat(remote)
         size = attrs.st_size or 0
-
         def _cb(transferred, total):
             if cb:
                 cb(transferred, size)
-
         self._sftp.get(remote, local, callback=_cb)
 
     def mkdir(self, path: str):
@@ -378,8 +370,6 @@ def _mode_to_str(mode: int) -> str:
 # SCP  (uses paramiko SSH underneath)
 # ─────────────────────────────────────────────
 class SCPClient:
-    """SCP wraps SFTP for file transfer but uses SCP semantics for the UI."""
-
     def __init__(
         self,
         host: str,
@@ -388,7 +378,6 @@ class SCPClient:
         password: Optional[str] = None,
         key_path: Optional[str] = None,
     ):
-        # SCP piggybacks on SFTP for listing/navigation
         self._inner = SFTPClient(host, port, user, password, key_path)
         self.cwd = self._inner.cwd
         self.protocol = "SCP"
@@ -402,22 +391,21 @@ class SCPClient:
         return result
 
     def upload(self, local: str, remote: str, cb: ProgressCallback = None):
-        import paramiko
-        from scp import SCPClient as _SCP  # type: ignore
-
-        transport = self._inner._ssh.get_transport()
-        with _SCP(transport, progress=lambda f, s, t: cb(s, t) if cb else None) as scp:
-            scp.put(local, remote)
+        try:
+            from scp import SCPClient as _SCP  # type: ignore
+            transport = self._inner._ssh.get_transport()
+            with _SCP(transport, progress=lambda f, s, t: cb(s, t) if cb else None) as scp:
+                scp.put(local, remote)
+        except ImportError:
+            self._inner.upload(local, remote, cb)
 
     def download(self, remote: str, local: str, cb: ProgressCallback = None):
-        import paramiko
         try:
             from scp import SCPClient as _SCP  # type: ignore
             transport = self._inner._ssh.get_transport()
             with _SCP(transport, progress=lambda f, s, t: cb(s, t) if cb else None) as scp:
                 scp.get(remote, local)
         except ImportError:
-            # fallback to SFTP if scp package not installed
             self._inner.download(remote, local, cb)
 
     def mkdir(self, path: str):
