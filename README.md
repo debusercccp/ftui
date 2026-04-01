@@ -43,7 +43,6 @@ source ~/.bashrc
 | F2     | Nuova connessione                   |
 | F3     | Bookmark salvati                    |
 | F5     | Trasferisci file selezionato        |
-| F6     | NAS Sync (FTP → home locale)        |
 | F7     | Crea directory                      |
 | F8     | Elimina                             |
 | F9     | Rinomina                            |
@@ -86,7 +85,6 @@ ftui/
 │   ├── styles.py       -- CSS centralizzato
 │   ├── modals.py       -- ConnectModal, BookmarksModal, InputModal, ConfirmModal
 │   ├── pane.py         -- FilePane: pannello locale/remoto
-│   ├── nas_sync.py     -- NasSyncModal, ConflictModal
 │   ├── protocols.py    -- Astrazione FTP/FTPS/SFTP/SCP
 │   └── bookmarks.py    -- Salvataggio connessioni (~/.config/ftui/bookmarks.json)
 ├── pyproject.toml
