@@ -1,4 +1,7 @@
-"""
+"""import socket
+import time
+from rich.text import Text
+from rich.markup import escape  # <--- Aggiungi questo""
 ftui - dual-pane TUI file transfer client
 Supports: FTP, FTPS, SFTP, SCP
 """
@@ -6,6 +9,10 @@ Supports: FTP, FTPS, SFTP, SCP
 from __future__ import annotations
 
 import os
+import socket
+import time
+from rich.text import Text
+from rich.markup import escape  
 import posixpath
 import shutil
 import threading
@@ -33,6 +40,7 @@ from textual.widgets import (
 from ftui.protocols import FileEntry, connect
 from ftui import bookmarks as bm
 
+socket.setdefaulttimeout(15)
 
 CSS = """
 Screen {
@@ -584,33 +592,55 @@ class FtuiApp(App):
         if not entry or entry.name == "..":
             self.notify("Select a file or directory.", severity="warning")
             return
+            
+        # Prendiamo la dimensione direttamente dalla lista (che sappiamo essere giusta)
+        expected_size = entry.size if not entry.is_dir else 0
+        
         if active.is_local:
             local_path  = os.path.join(active.current_path, entry.name)
             remote_path = posixpath.join(self._remote_pane().current_path, entry.name)
             if entry.is_dir:
                 self._run_dir_transfer("upload", local_path, remote_path, entry.name)
             else:
-                self._run_transfer("upload", local_path, remote_path, entry.name)
+                self._run_transfer("upload", local_path, remote_path, entry.name, expected_size)
         else:
             remote_path = posixpath.join(active.current_path, entry.name)
             local_path  = os.path.join(self._local_pane().current_path, entry.name)
             if entry.is_dir:
                 self._run_dir_transfer("download", local_path, remote_path, entry.name)
             else:
-                self._run_transfer("download", local_path, remote_path, entry.name)
+                self._run_transfer("download", local_path, remote_path, entry.name, expected_size)
 
-    def _run_transfer(self, direction: str, local: str, remote: str, name: str):
+    def _run_transfer(self, direction: str, local: str, remote: str, name: str, expected_size: int = 0):
         bar      = self.query_one("#transfer-bar")
         label    = self.query_one("#transfer-label", Label)
         progress = self.query_one("#transfer-progress", ProgressBar)
         bar.add_class("visible")
-        label.update(f" {'UP' if direction == 'upload' else 'DN'}  {name} ")
+        
+        arrow = "UP" if direction == "upload" else "DN"
+        label.update(Text(f" {arrow}  {name} "))
+        progress.update(progress=0)
+
+        state = {"last_update": 0.0}
+
+        def _update_ui(pct: int | None, text: str | None):
+            if pct is not None:
+                progress.update(progress=pct)
+            if text is not None:
+                label.update(Text(text))
 
         def _cb(transferred: int, total: int):
-            if total > 0:
-                pct = int(transferred / total * 100)
-                # chiamato dal thread FTP — obbligatorio call_from_thread
-                self.call_from_thread(progress.update, progress=pct)
+            actual_total = total if total > 0 else expected_size
+            now = time.time()
+            if now - state["last_update"] > 0.15:
+                state["last_update"] = now
+                if actual_total > 0:
+                    pct = min(100, int(transferred / actual_total * 100))
+                    self.call_from_thread(_update_ui, pct, None)
+                else:
+                    kb = transferred / 1024
+                    self.call_from_thread(_update_ui, None, f" {arrow}  {name} ({kb:.1f} KB) ")
+                time.sleep(0.005)
 
         def _run():
             try:
@@ -618,9 +648,16 @@ class FtuiApp(App):
                     self._client.upload(local, remote, _cb)
                 else:
                     self._client.download(remote, local, _cb)
+                
+                self.call_from_thread(_update_ui, 100, None)
+                
+                # Diamo al server FTP mezzo secondo per chiudere 
+                # il canale dati in modo pulito prima di fare altre richieste.
+                time.sleep(0.5)
+                
                 self.call_from_thread(self._transfer_done, name, direction)
             except Exception as e:
-                self.call_from_thread(self.notify, f"Transfer failed: {e}", severity="error")
+                self.call_from_thread(self.notify, escape(f"Transfer failed: {e}"), severity="error")
                 self.call_from_thread(bar.remove_class, "visible")
 
         threading.Thread(target=_run, daemon=True).start()
@@ -631,40 +668,63 @@ class FtuiApp(App):
         progress = self.query_one("#transfer-progress", ProgressBar)
         bar.add_class("visible")
         arrow    = "UP" if direction == "upload" else "DN"
-        counters = {"done": 0, "total": 0}
+        
+        counters = {"done": 0, "total": 0, "last_update": 0.0}
+
+        def _update_dir_ui(pct: int, text: str):
+            progress.update(progress=pct)
+            label.update(Text(text))
 
         def _file_cb(transferred: int, total: int):
             if transferred == total and total > 0:
                 counters["done"] += 1
-            if counters["total"] > 0:
-                pct = int(counters["done"] / counters["total"] * 100)
-                self.call_from_thread(progress.update, progress=pct)
-                self.call_from_thread(
-                    label.update,
-                    f" {arrow}  {name}/  [{counters['done']}/{counters['total']} files] "
-                )
+            
+            now = time.time()
+            if now - counters["last_update"] > 0.2:
+                counters["last_update"] = now
+                if counters["total"] > 0:
+                    pct = min(100, int(counters["done"] / counters["total"] * 100))
+                    text = f" {arrow}  {name}/  [{counters['done']}/{counters['total']} files] "
+                    self.call_from_thread(_update_dir_ui, pct, text)
+                    time.sleep(0.005)
 
         def _run():
             try:
                 if direction == "upload":
                     counters["total"] = sum(1 for p in Path(local).rglob("*") if p.is_file())
-                    self.call_from_thread(label.update, f" {arrow}  {name}/  [0/{counters['total']} files] ")
+                    self.call_from_thread(label.update, Text(f" {arrow}  {name}/  [0/{counters['total']} files] "))
                     self._client.upload_dir(local, remote, _file_cb)
                 else:
-                    self.call_from_thread(label.update, f" {arrow}  {name}/  [downloading...] ")
+                    self.call_from_thread(label.update, Text(f" {arrow}  {name}/  [downloading...] "))
                     self._client.download_dir(remote, local, _file_cb)
+                
+                self.call_from_thread(_update_dir_ui, 100, f" {arrow}  {name}/  [{counters['total']}/{counters['total']} files] ")
+                
+                
+                time.sleep(0.5)
+                
                 self.call_from_thread(self._transfer_done, name, direction)
             except Exception as e:
-                self.call_from_thread(self.notify, f"Transfer failed: {e}", severity="error")
+                self.call_from_thread(self.notify, escape(f"Transfer failed: {e}"), severity="error")
                 self.call_from_thread(bar.remove_class, "visible")
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _transfer_done(self, name: str, direction: str):
-        self.query_one("#transfer-bar").remove_class("visible")
-        self.notify(f"{'Uploaded' if direction == 'upload' else 'Downloaded'}: {name}", title="Transfer complete")
-        self._local_pane().refresh_current()
-        self._remote_pane().refresh_current()
+        try:
+            self.query_one("#transfer-bar").remove_class("visible")
+            msg = f"{'Uploaded' if direction == 'upload' else 'Downloaded'}: {name}"
+            self.notify(escape(msg), title="Transfer complete")
+            
+            # Ricarica solo il pannello che ha fisicamente ricevuto i file!
+            # Questo evita il freeze totale causato da richieste FTP multiple simultanee.
+            if direction == "upload":
+                self._remote_pane().refresh_current()
+            else:
+                self._local_pane().refresh_current()
+                
+        except Exception as e:
+            self.notify(escape(f"Refresh failed: {e}"), severity="warning")
 
     def action_mkdir(self):
         self._sync_pane_from_focus()

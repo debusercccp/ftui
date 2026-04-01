@@ -16,6 +16,7 @@ import ftplib
 import os
 import stat
 import threading
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -55,8 +56,19 @@ class FTPClient:
         self._password = password
         self._tls      = tls
         self._ftp      = None
+        self._lock     = threading.RLock()  # Usiamo RLock per i trasferimenti di intere cartelle
         self._connect()
         self.protocol = "FTPS" if tls else "FTP"
+
+    @contextlib.contextmanager
+    def _busy_lock(self):
+        """Se c'è un trasferimento in corso, blocca il nuovo comando istantaneamente senza far freezare la UI."""
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError("Operazione rifiutata: trasferimento in corso. Attendi la fine.")
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     def _connect(self):
         if self._tls:
@@ -72,152 +84,151 @@ class FTPClient:
         self.cwd = self._ftp.pwd()
 
     def _reconnect(self):
-        """Riconnette silenziosamente dopo un broken pipe."""
         try:
             self._ftp.close()
         except Exception:
             pass
         self._connect()
-        # ripristina la directory corrente
         try:
             self._ftp.cwd(self.cwd)
         except Exception:
             self.cwd = self._ftp.pwd()
 
     def _run(self, fn):
-        """Esegue fn(), riconnette e riprova una volta in caso di broken pipe."""
         try:
             return fn()
         except ftplib.error_reply as e:
-            # risposte 2xx sono successo, non errori — ignorale
-            if str(e).startswith("2"):
-                return
             raise
         except (BrokenPipeError, EOFError, ConnectionResetError, OSError):
             self._reconnect()
             return fn()
 
     def ls(self, path: str = ".") -> list[FileEntry]:
-        def _do():
-            lines: list[str] = []
-            try:
-                self._ftp.dir(f"-a {path}", lines.append)
-            except Exception:
-                lines = []
-                self._ftp.dir(path, lines.append)
-            entries = []
-            for line in lines:
-                entry = _parse_ftp_line(line)
-                if entry and entry.name not in (".", ".."):
-                    entries.append(entry)
-            entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
-            return entries
-        return self._run(_do)
+        with self._busy_lock():
+            def _do():
+                lines: list[str] = []
+                try:
+                    self._ftp.dir(f"-a {path}", lines.append)
+                except Exception:
+                    lines = []
+                    self._ftp.dir(path, lines.append)
+                entries = []
+                for line in lines:
+                    entry = _parse_ftp_line(line)
+                    if entry and entry.name not in (".", ".."):
+                        entries.append(entry)
+                entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
+                return entries
+            return self._run(_do)
 
     def cd(self, path: str) -> str:
-        def _do():
-            self._ftp.cwd(path)
-            self.cwd = self._ftp.pwd()
-            return self.cwd
-        return self._run(_do)
+        with self._busy_lock():
+            def _do():
+                self._ftp.cwd(path)
+                self.cwd = self._ftp.pwd()
+                return self.cwd
+            return self._run(_do)
 
     def upload(self, local: str, remote: str, cb: ProgressCallback = None):
-        try:
-            size = os.path.getsize(local)
-        except Exception:
-            size = 0
-        transferred = 0
+        with self._busy_lock():
+            try:
+                size = os.path.getsize(local)
+            except Exception:
+                size = 0
 
-        def _cb(data: bytes):
-            nonlocal transferred
-            transferred += len(data)
-            if cb:
-                cb(transferred, size)
+            def _do():
+                transferred = 0
+                with open(local, "rb") as f:
+                    def _cb(data: bytes):
+                        nonlocal transferred
+                        transferred += len(data)
+                        if cb:
+                            cb(transferred, size)
+                    self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
 
-        def _do():
-            with open(local, "rb") as f:
-                self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
-
-        self._run(_do)
+            self._run(_do)
 
     def download(self, remote: str, local: str, cb: ProgressCallback = None):
-        try:
-            size = self._ftp.size(remote) or 0
-        except Exception:
-            size = 0
+        with self._busy_lock():
+            try:
+                size = self._ftp.size(remote) or 0
+            except Exception:
+                size = 0
 
-        transferred = 0
-        out = open(local, "wb")
+            def _do_transfer():
+                transferred = 0
+                with open(local, "wb") as out:
+                    def _chunk(data: bytes):
+                        nonlocal transferred
+                        out.write(data)
+                        transferred += len(data)
+                        if cb:
+                            cb(transferred, size)
+                    
+                    self._ftp.retrbinary(f"RETR {remote}", _chunk)
 
-        def _chunk(data: bytes):
-            nonlocal transferred
-            out.write(data)
-            transferred += len(data)
-            if cb:
-                cb(transferred, size)
-
-        try:
-            self._run(lambda: self._ftp.retrbinary(f"RETR {remote}", _chunk))
-        finally:
-            out.close()
+            self._run(_do_transfer)
 
     def mkdir(self, path: str):
-        self._run(lambda: self._ftp.mkd(path))
+        with self._busy_lock():
+            self._run(lambda: self._ftp.mkd(path))
 
     def delete(self, path: str, is_dir: bool = False):
-        def _do():
-            if is_dir:
-                for cmd in (
-                    lambda: self._ftp.rmd(path),
-                    lambda: self._ftp.voidcmd(f"XRMD {path}"),
-                    lambda: self._ftp.voidcmd(f"SITE RMDIR {path}"),
-                ):
-                    try:
-                        cmd()
-                        return
-                    except ftplib.error_perm as e:
-                        last = e
-                raise last
-            else:
-                self._ftp.delete(path)
-        self._run(_do)
+        with self._busy_lock():
+            def _do():
+                if is_dir:
+                    for cmd in (
+                        lambda: self._ftp.rmd(path),
+                        lambda: self._ftp.voidcmd(f"XRMD {path}"),
+                        lambda: self._ftp.voidcmd(f"SITE RMDIR {path}"),
+                    ):
+                        try:
+                            cmd()
+                            return
+                        except ftplib.error_perm as e:
+                            last = e
+                    raise last
+                else:
+                    self._ftp.delete(path)
+            self._run(_do)
 
     def rename(self, old: str, new: str):
-        self._run(lambda: self._ftp.rename(old, new))
+        with self._busy_lock():
+            self._run(lambda: self._ftp.rename(old, new))
 
     def upload_dir(self, local_dir: str, remote_dir: str, cb: ProgressCallback = None):
-        """Carica ricorsivamente una directory locale su remoto."""
-        import posixpath
-        try:
-            self.mkdir(remote_dir)
-        except Exception:
-            pass
-        for item in sorted(Path(local_dir).iterdir()):
-            remote_path = posixpath.join(remote_dir, item.name)
-            if item.is_dir():
-                self.upload_dir(str(item), remote_path, cb)
-            else:
-                self.upload(str(item), remote_path, cb)
+        with self._busy_lock():
+            import posixpath
+            try:
+                self.mkdir(remote_dir)
+            except Exception:
+                pass
+            for item in sorted(Path(local_dir).iterdir()):
+                remote_path = posixpath.join(remote_dir, item.name)
+                if item.is_dir():
+                    self.upload_dir(str(item), remote_path, cb)
+                else:
+                    self.upload(str(item), remote_path, cb)
 
     def download_dir(self, remote_dir: str, local_dir: str, cb: ProgressCallback = None):
-        """Scarica ricorsivamente una directory remota in locale."""
-        import posixpath
-        Path(local_dir).mkdir(parents=True, exist_ok=True)
-        entries = self.ls(remote_dir)
-        for entry in entries:
-            remote_path = posixpath.join(remote_dir, entry.name)
-            local_path = os.path.join(local_dir, entry.name)
-            if entry.is_dir:
-                self.download_dir(remote_path, local_path, cb)
-            else:
-                self.download(remote_path, local_path, cb)
+        with self._busy_lock():
+            import posixpath
+            Path(local_dir).mkdir(parents=True, exist_ok=True)
+            entries = self.ls(remote_dir)
+            for entry in entries:
+                remote_path = posixpath.join(remote_dir, entry.name)
+                local_path = os.path.join(local_dir, entry.name)
+                if entry.is_dir:
+                    self.download_dir(remote_path, local_path, cb)
+                else:
+                    self.download(remote_path, local_path, cb)
 
     def disconnect(self):
-        try:
-            self._ftp.quit()
-        except Exception:
-            self._ftp.close()
-
+        with self._busy_lock():
+            try:
+                self._ftp.quit()
+            except Exception:
+                self._ftp.close()
 
 def _parse_ftp_line(line: str) -> Optional[FileEntry]:
     """Parse Unix-style LIST output."""
