@@ -49,41 +49,77 @@ ProgressCallback = Callable[[int, int], None]  # (transferred, total)
 # ─────────────────────────────────────────────
 class FTPClient:
     def __init__(self, host: str, port: int, user: str, password: str, tls: bool = False):
-        if tls:
+        self._host     = host
+        self._port     = port
+        self._user     = user
+        self._password = password
+        self._tls      = tls
+        self._ftp      = None
+        self._connect()
+        self.protocol = "FTPS" if tls else "FTP"
+
+    def _connect(self):
+        if self._tls:
             self._ftp = ftplib.FTP_TLS()
         else:
             self._ftp = ftplib.FTP()
-        self._ftp.connect(host, port, timeout=15)
-        # Python 3.13: forza latin-1 sul socket reader per server che non parlano UTF-8
-        self._ftp.file = self._ftp.sock.makefile('r', encoding='latin-1')
-        self._ftp.encoding = 'latin-1'
-        self._ftp.login(user, password)
-        if tls:
+        self._ftp.connect(self._host, self._port, timeout=30)
+        self._ftp.encoding = "latin-1"
+        self._ftp.login(self._user, self._password)
+        if self._tls:
             self._ftp.prot_p()
         self._ftp.set_pasv(True)
         self.cwd = self._ftp.pwd()
-        self.protocol = "FTPS" if tls else "FTP"
+
+    def _reconnect(self):
+        """Riconnette silenziosamente dopo un broken pipe."""
+        try:
+            self._ftp.close()
+        except Exception:
+            pass
+        self._connect()
+        # ripristina la directory corrente
+        try:
+            self._ftp.cwd(self.cwd)
+        except Exception:
+            self.cwd = self._ftp.pwd()
+
+    def _run(self, fn):
+        """Esegue fn(), riconnette e riprova una volta in caso di broken pipe."""
+        try:
+            return fn()
+        except ftplib.error_reply as e:
+            # risposte 2xx sono successo, non errori — ignorale
+            if str(e).startswith("2"):
+                return
+            raise
+        except (BrokenPipeError, EOFError, ConnectionResetError, OSError):
+            self._reconnect()
+            return fn()
 
     def ls(self, path: str = ".") -> list[FileEntry]:
-        entries: list[FileEntry] = []
-        lines: list[str] = []
-        try:
-            # -a include hidden files, alcuni server lo supportano
-            self._ftp.dir(f"-a {path}", lines.append)
-        except Exception:
-            lines = []
-            self._ftp.dir(path, lines.append)
-        for line in lines:
-            entry = _parse_ftp_line(line)
-            if entry and entry.name not in (".", ".."):
-                entries.append(entry)
-        entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
-        return entries
+        def _do():
+            lines: list[str] = []
+            try:
+                self._ftp.dir(f"-a {path}", lines.append)
+            except Exception:
+                lines = []
+                self._ftp.dir(path, lines.append)
+            entries = []
+            for line in lines:
+                entry = _parse_ftp_line(line)
+                if entry and entry.name not in (".", ".."):
+                    entries.append(entry)
+            entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
+            return entries
+        return self._run(_do)
 
     def cd(self, path: str) -> str:
-        self._ftp.cwd(path)
-        self.cwd = self._ftp.pwd()
-        return self.cwd
+        def _do():
+            self._ftp.cwd(path)
+            self.cwd = self._ftp.pwd()
+            return self.cwd
+        return self._run(_do)
 
     def upload(self, local: str, remote: str, cb: ProgressCallback = None):
         try:
@@ -98,53 +134,56 @@ class FTPClient:
             if cb:
                 cb(transferred, size)
 
-        with open(local, "rb") as f:
-            self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
+        def _do():
+            with open(local, "rb") as f:
+                self._ftp.storbinary(f"STOR {remote}", f, callback=_cb)
+
+        self._run(_do)
 
     def download(self, remote: str, local: str, cb: ProgressCallback = None):
-    # Usa RETR direttamente senza SIZE per evitare problemi con TYPE I
-        transferred = 0
-        size = 0
         try:
-        # Prova a ottenere la size senza cambiare tipo
-            resp = self._ftp.sendcmd(f"SIZE {remote}")
-            if resp.startswith("213 "):
-                size = int(resp[4:].strip())
+            size = self._ftp.size(remote) or 0
         except Exception:
-            pass
+            size = 0
 
-        def _cb(data: bytes):
+        transferred = 0
+        out = open(local, "wb")
+
+        def _chunk(data: bytes):
             nonlocal transferred
+            out.write(data)
             transferred += len(data)
-            f.write(data)
             if cb:
                 cb(transferred, size)
 
-        with open(local, "wb") as f:
-            self._ftp.retrbinary(f"RETR {remote}", _cb)
+        try:
+            self._run(lambda: self._ftp.retrbinary(f"RETR {remote}", _chunk))
+        finally:
+            out.close()
 
     def mkdir(self, path: str):
-        self._ftp.mkd(path)
+        self._run(lambda: self._ftp.mkd(path))
 
     def delete(self, path: str, is_dir: bool = False):
-        if is_dir:
-            # prova in ordine: RMD, XRMD, SITE RMDIR
-            for cmd in (
-                lambda: self._ftp.rmd(path),
-                lambda: self._ftp.voidcmd(f"XRMD {path}"),
-                lambda: self._ftp.voidcmd(f"SITE RMDIR {path}"),
-            ):
-                try:
-                    cmd()
-                    return
-                except ftplib.error_perm as e:
-                    last = e
-            raise last
-        else:
-            self._ftp.delete(path)
+        def _do():
+            if is_dir:
+                for cmd in (
+                    lambda: self._ftp.rmd(path),
+                    lambda: self._ftp.voidcmd(f"XRMD {path}"),
+                    lambda: self._ftp.voidcmd(f"SITE RMDIR {path}"),
+                ):
+                    try:
+                        cmd()
+                        return
+                    except ftplib.error_perm as e:
+                        last = e
+                raise last
+            else:
+                self._ftp.delete(path)
+        self._run(_do)
 
     def rename(self, old: str, new: str):
-        self._ftp.rename(old, new)
+        self._run(lambda: self._ftp.rename(old, new))
 
     def upload_dir(self, local_dir: str, remote_dir: str, cb: ProgressCallback = None):
         """Carica ricorsivamente una directory locale su remoto."""
@@ -181,18 +220,14 @@ class FTPClient:
 
 
 def _parse_ftp_line(line: str) -> Optional[FileEntry]:
-    """Parse Unix-style LIST output, gestisce encoding non-UTF8."""
+    """Parse Unix-style LIST output."""
     try:
-        # Forza la stringa a essere valida rimuovendo caratteri problematici
-        if isinstance(line, bytes):
-            line = line.decode("latin-1", errors="replace")
-        else:
-            line = line.encode("latin-1", errors="replace").decode("latin-1", errors="replace")
-
+        line = line.encode("latin-1", errors="replace").decode("latin-1")
         parts = line.split(None, 8)
         if len(parts) < 9:
             return None
         perms, _, _, _, size_str, month, day, year_or_time, name = parts
+        # alcuni server restituiscono il path completo nel nome — teniamo solo il basename
         name = name.strip().split("/")[-1]
         if not name:
             return None
@@ -201,6 +236,8 @@ def _parse_ftp_line(line: str) -> Optional[FileEntry]:
         return FileEntry(name=name, size=size, is_dir=is_dir, permissions=perms)
     except Exception:
         return None
+
+
 # ─────────────────────────────────────────────
 # SFTP
 # ─────────────────────────────────────────────
