@@ -331,7 +331,7 @@ def render_input_modal(prompt: str, value: str, width: int) -> FormattedText:
 # Main App
 # ─────────────────────────────────────────────
 class FtuiApp:
-    PANE_HEIGHT = 25
+    PANE_HEIGHT = 28
 
     def __init__(self):
         self.left   = PaneState(is_local=True)
@@ -361,40 +361,44 @@ class FtuiApp:
     # ─── Build ────────────────────────────────
 
     def _build(self):
-        # Controls — lambdas re-evaluated every redraw
+        def _pane_w() -> int:
+            return 45
+
         def left_ft():
+            w = _pane_w()
             if self.modal == "connect":
-                return render_connect_modal(self.modal_inputs, self.modal_cursor, self.modal_error, 45)
+                return render_connect_modal(self.modal_inputs, self.modal_cursor, self.modal_error, w)
             if self.modal == "bookmarks":
-                return render_bookmarks_modal(self.modal_bms, self.modal_cursor, 45)
+                return render_bookmarks_modal(self.modal_bms, self.modal_cursor, w)
             if self.modal in ("mkdir", "rename", "confirm"):
-                return render_input_modal(self.modal_prompt, self._input_buf, 45)
-            return render_pane(self.left, self.focus == "left", 45, self.PANE_HEIGHT)
+                return render_input_modal(self.modal_prompt, self._input_buf, w)
+            return render_pane(self.left, self.focus == "left", w, self.PANE_HEIGHT)
 
         def right_ft():
-            return render_pane(self.right, self.focus == "right", 45, self.PANE_HEIGHT)
+            w = _pane_w()
+            return render_pane(self.right, self.focus == "right", w, self.PANE_HEIGHT)
+
+        def header_ft():
+            return FT([("class:header", _pad("  ftui  —  FTP / FTPS / SFTP / SCP", 91))])
+
+        def status_ft():
+            return render_status(self._status_msg, self._status_error, 91)
+
+        def xfer_ft():
+            return render_transfer(self.xfer, 91)
 
         lc = FormattedTextControl(left_ft,  focusable=True)
         rc = FormattedTextControl(right_ft, focusable=True)
-        xc = FormattedTextControl(
-            lambda: render_transfer(self.xfer, 92),
-            focusable=False,
-        )
-        sc = FormattedTextControl(
-            lambda: render_status(self._status_msg, self._status_error, 92),
-            focusable=False,
-        )
-        hc = FormattedTextControl(
-            lambda: FT([("class:header", _pad("  ftui  —  FTP / FTPS / SFTP / SCP", 92))]),
-            focusable=False,
-        )
+        xc = FormattedTextControl(xfer_ft,   focusable=False)
+        sc = FormattedTextControl(status_ft, focusable=False)
+        hc = FormattedTextControl(header_ft, focusable=False)
 
         self._layout = Layout(HSplit([
             Window(hc, height=1, dont_extend_height=True),
             VSplit([
-                Window(lc, dont_extend_height=False),
+                Window(lc, width=45, dont_extend_height=False),
                 Window(width=1, char="│", style="class:sep"),
-                Window(rc, dont_extend_height=False),
+                Window(rc, width=45, dont_extend_height=False),
             ]),
             ConditionalContainer(
                 Window(xc, height=1, dont_extend_height=True),
