@@ -244,9 +244,12 @@ def render_transfer(xfer: XferState, width: int) -> FormattedText:
 
 def render_status(msg: str, is_error: bool, width: int) -> FormattedText:
     keys = " F2 Connect  F3 Bookmarks  F5 Transfer  F7 Mkdir  F8 Delete  F9 Rename  Tab Switch  Q Quit"
-    text  = f" {_safe(msg)}" if msg else keys
-    style = "class:status.err" if is_error else ("class:status.ok" if msg and not is_error else "class:status")
-    return FT([(style, _pad(text, width))])
+    frags = []
+    if msg:
+        style = "class:status.err" if is_error else "class:status.ok"
+        frags.append((style, _pad(f" {_safe(msg)}", width) + "\n"))
+    frags.append(("class:status", _pad(keys, width)))
+    return FT(frags)
 
 
 # ─────────────────────────────────────────────
@@ -404,7 +407,7 @@ class FtuiApp:
                 Window(xc, height=1, dont_extend_height=True),
                 filter=Condition(lambda: self.xfer.active),
             ),
-            Window(sc, height=1, dont_extend_height=True),
+            Window(sc, height=lambda: 2 if self._status_msg else 1, dont_extend_height=True),
         ]))
 
         self._app = Application(
@@ -583,11 +586,15 @@ class FtuiApp:
                 if state.is_local:
                     p = Path(path)
                     entries = []
-                    for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                    for item in sorted(p.iterdir(), key=lambda x: (not x.is_dir(follow_symlinks=True), x.name.lower())):
                         try:
-                            st = item.stat()
-                            entries.append(FileEntry(name=item.name, size=st.st_size, is_dir=item.is_dir()))
-                        except PermissionError:
+                            st = item.stat(follow_symlinks=True)
+                            entries.append(FileEntry(
+                                name=item.name,
+                                size=st.st_size,
+                                is_dir=item.is_dir(follow_symlinks=True),
+                            ))
+                        except OSError:
                             pass
                     state.path    = str(p)
                     state.entries = entries
