@@ -58,13 +58,27 @@ python3 -m ftui.app
 - Bookmarks: premi F3 e usa Su/Giu + Enter per selezionare
 
 ## Struttura
-
+```
+ftui/
+├── app.py
+├── bookmarks.py
+├── __init__.py
+├── modals.py
+├── pane.py
+├── protocols.py
+├── __pycache__
+│   ├── app.cpython-313.pyc
+│   ├── bookmarks.cpython-313.pyc
+│   ├── __init__.cpython-313.pyc
+│   └── protocols.cpython-313.pyc
+└── styles.py
+```
 ```
 ftui/
 ├── ftui/
 │   ├── __init__.py
 │   ├── app.py          -- TUI principale (prompt_toolkit)
-│   ├── protocols.py    -- FTP/FTPS/SFTP/SCP (identico a ftui)
+│   ├── protocols.py    -- FTP/FTPS/SFTP/SCP 
 │   └── bookmarks.py    -- Salvataggio connessioni
 ├── pyproject.toml
 └── README.md
