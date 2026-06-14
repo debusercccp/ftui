@@ -70,6 +70,17 @@ python3 -m ftui.app
     ├── __init__.cpython-313.pyc
     └── protocols.cpython-313.pyc
 ``````
+/home/noya/progetti/ftui/ftui/
+├── app.py
+├── bookmarks.py
+├── __init__.py
+├── protocols.py
+└── __pycache__
+    ├── app.cpython-313.pyc
+    ├── bookmarks.cpython-313.pyc
+    ├── __init__.cpython-313.pyc
+    └── protocols.cpython-313.pyc
+``````
 ftui/
 ├── app.py
 ├── bookmarks.py

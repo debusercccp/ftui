@@ -20,6 +20,17 @@ There are no tests and no linter configured in this repo.
 
 Non inserire firme, co-autore o credenziali IA nei messaggi di commit. Usa solo messaggi standard in formato Conventional Commits.
 
+## Project structure
+
+```
+ftui/
+├── app.py        — TUI principale (prompt_toolkit): PaneState, XferState, FtuiApp, render_*
+├── protocols.py  — FTP/FTPS/SFTP/SCP clients + FileEntry + connect() factory
+├── bookmarks.py  — salvataggio/lettura ~/.config/ftui/bookmarks.json
+└── __init__.py
+pyproject.toml
+```
+
 ## Architecture
 
 `ftui` is a dual-pane TUI file transfer client (FTP/FTPS/SFTP/SCP). The active implementation lives entirely in `ftui/app.py` using **prompt_toolkit** (`FormattedText` tuple API). This was deliberately chosen over Textual for low overhead on Raspberry Pi / slow SSH sessions.
